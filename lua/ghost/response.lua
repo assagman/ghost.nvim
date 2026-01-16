@@ -7,9 +7,9 @@ local M = {}
 local config = require("ghost.config")
 
 -- Streaming render constants (not exposed to user config)
-local RENDER_INTERVAL_MS = 33 -- ~30fps for smooth typewriter effect
-local MAX_CHARS_PER_TICK = 512 -- Max chars to process per timer tick (adaptive)
-local MIN_CHARS_PER_TICK = 64 -- Min chars per tick for responsiveness
+local RENDER_INTERVAL_MS = 16 -- ~60fps for smooth typewriter effect
+local MAX_CHARS_PER_TICK = 128 -- Max chars to process per timer tick (when catching up)
+local MIN_CHARS_PER_TICK = 12 -- Min chars per tick (~750 chars/sec for natural typing feel)
 
 --- @class GhostResponseState
 --- @field buf number|nil The response buffer number
@@ -90,11 +90,15 @@ flush_pending = function()
 
   -- Determine how many chars to process this tick (adaptive based on backlog)
   local chars_to_process = MIN_CHARS_PER_TICK
-  if state.pending_bytes > 2000 then
-    -- Large backlog: process more to catch up
+  if state.pending_bytes > 1000 then
+    -- Large backlog: process more to catch up (but still smooth)
     chars_to_process = MAX_CHARS_PER_TICK
-  elseif state.pending_bytes > 500 then
-    chars_to_process = 256
+  elseif state.pending_bytes > 300 then
+    -- Medium backlog: moderate speed
+    chars_to_process = 48
+  elseif state.pending_bytes > 100 then
+    -- Small backlog: slightly faster
+    chars_to_process = 24
   end
 
   -- Consume text from pending queue
@@ -555,11 +559,37 @@ function M.update_tool_call(tool_id, tool_name, status, kind)
   update_buffer()
 end
 
+--- Flush all pending chunks synchronously (used before headers/separators)
+local function flush_pending_sync()
+  if #state.pending_chunks == 0 then
+    return
+  end
+
+  -- Process all pending text immediately
+  local combined = table.concat(state.pending_chunks)
+  state.pending_chunks = {}
+  state.pending_bytes = 0
+
+  -- Process into lines
+  local segments = vim.split(combined, "\n", { plain = true })
+  for i, segment in ipairs(segments) do
+    if i == 1 then
+      state.current_line = state.current_line .. segment
+    else
+      table.insert(state.lines, state.current_line)
+      state.current_line = segment
+    end
+  end
+end
+
 --- Add a separator line
 function M.add_separator()
   if not M.is_open() then
     return
   end
+
+  -- Flush any pending text first to maintain correct order
+  flush_pending_sync()
 
   -- Complete current line first
   if state.current_line ~= "" then
@@ -577,6 +607,9 @@ function M.add_header(header)
   if not M.is_open() then
     M.open()
   end
+
+  -- Flush any pending text first to maintain correct order
+  flush_pending_sync()
 
   -- Complete current line first
   if state.current_line ~= "" then
