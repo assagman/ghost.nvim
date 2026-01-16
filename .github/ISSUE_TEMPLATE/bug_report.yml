@@ -1,0 +1,100 @@
+name: Bug Report
+description: Report a bug or unexpected behavior
+title: "[Bug]: "
+labels: ["bug"]
+assignees:
+  - assagman
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug! Please fill out the form below.
+        **Important:** Redact any API keys or secrets before pasting output.
+
+  - type: input
+    id: nvim-version
+    attributes:
+      label: Neovim version
+      description: Output of `nvim --version` (first line is enough)
+      placeholder: "NVIM v0.10.0"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS and architecture
+      description: e.g. macOS 14.5 arm64, Ubuntu 22.04 x86_64
+      placeholder: "macOS 14.5 arm64"
+    validations:
+      required: true
+
+  - type: input
+    id: plugin-version
+    attributes:
+      label: Plugin version
+      description: git commit SHA or tag (run `git rev-parse HEAD` in ghost.nvim dir)
+      placeholder: "abc1234 or v1.0.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Backend
+      description: Which backend are you using?
+      options:
+        - opencode
+        - codex
+    validations:
+      required: true
+
+  - type: textarea
+    id: checkhealth
+    attributes:
+      label: ":checkhealth ghost output"
+      description: Run `:checkhealth ghost` in Neovim and paste the output here. Redact secrets.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: ghoststatus
+    attributes:
+      label: ":GhostStatus output (optional)"
+      description: Run `:GhostStatus` in Neovim and paste the output here. Redact secrets.
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: repro-steps
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps to reproduce the issue
+      placeholder: |
+        1. Open a file...
+        2. Trigger Ghost prompt `<leader>aq`
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected-actual
+    attributes:
+      label: Expected vs actual behavior
+      description: What did you expect to happen? What actually happened?
+      placeholder: |
+        Expected: ...
+        Actual: ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / error messages
+      description: Paste any relevant logs, stderr output, or Neovim error messages
+      render: text
+    validations:
+      required: true

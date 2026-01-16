@@ -1,0 +1,49 @@
+name: Refactor / Chore
+description: Internal cleanup, maintenance, or refactoring request
+title: "[Chore]: "
+labels: ["chore"]
+assignees:
+  - assagman
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Request internal improvements or maintenance work.
+
+  - type: dropdown
+    id: chore-type
+    attributes:
+      label: Type
+      options:
+        - Refactor
+        - Dependency update
+        - CI/CD improvement
+        - Code cleanup
+        - Performance optimization
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What needs to be done and why?
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope / affected files
+      description: Which parts of the codebase are affected?
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Any other relevant information
+    validations:
+      required: false
