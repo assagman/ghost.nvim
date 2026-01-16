@@ -107,7 +107,7 @@ stop_render_timer = function()
 end
 
 --- Process pending chunks and update buffer incrementally
-flush_pending = function()
+flush_pending = function() -- luacheck: ignore 561
   -- Nothing to do if no pending data and no forced redraw
   if #state.pending_chunks == 0 and not state.needs_full_redraw then
     -- Stop timer if not streaming anymore
@@ -149,7 +149,6 @@ flush_pending = function()
       table.insert(text_to_process, chunk:sub(1, remaining))
       state.pending_chunks[1] = chunk:sub(remaining + 1)
       state.pending_bytes = state.pending_bytes - remaining
-      processed = remaining
       break
     end
   end
