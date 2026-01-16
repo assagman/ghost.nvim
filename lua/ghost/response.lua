@@ -1,19 +1,31 @@
 --- Ghost response display module - Floating buffer for streaming output
+--- Implements smooth typewriter-style rendering with timer-based updates
 --- @module ghost.response
 
 local M = {}
 
 local config = require("ghost.config")
 
+-- Streaming render constants (not exposed to user config)
+local RENDER_INTERVAL_MS = 33 -- ~30fps for smooth typewriter effect
+local MAX_CHARS_PER_TICK = 512 -- Max chars to process per timer tick (adaptive)
+local MIN_CHARS_PER_TICK = 64 -- Min chars per tick for responsiveness
+
 --- @class GhostResponseState
 --- @field buf number|nil The response buffer number
 --- @field win number|nil The response window number
---- @field lines string[] Current lines in the buffer
+--- @field lines string[] Committed lines in the buffer
 --- @field current_line string Current line being built (incomplete)
 --- @field tool_calls table<string, table> Active tool calls by ID
 --- @field is_streaming boolean Whether response is currently streaming
 --- @field is_complete boolean Whether response is complete
 --- @field current_session_id string|nil Session ID whose transcript is currently displayed
+--- @field pending_chunks string[] Queue of text chunks waiting to be rendered
+--- @field pending_bytes number Total bytes in pending_chunks
+--- @field render_timer userdata|nil The libuv timer for smooth rendering
+--- @field rendered_line_count number Number of state.lines already rendered to buffer
+--- @field rendered_current_line string|nil The current_line value last rendered
+--- @field needs_full_redraw boolean Force full buffer redraw on next tick
 local state = {
   buf = nil,
   win = nil,
@@ -24,10 +36,184 @@ local state = {
   is_complete = false,
   on_reply = nil, -- Callback when user wants to reply
   current_session_id = nil, -- Track which session is displayed
+  -- Smooth streaming state
+  pending_chunks = {},
+  pending_bytes = 0,
+  render_timer = nil,
+  rendered_line_count = 0,
+  rendered_current_line = nil,
+  needs_full_redraw = false,
 }
 
--- Forward declaration for update_buffer (defined below)
+-- Forward declarations
 local update_buffer
+local flush_pending
+local start_render_timer
+local stop_render_timer
+
+--- Start the render timer for smooth streaming
+start_render_timer = function()
+  if state.render_timer then
+    return -- Already running
+  end
+
+  local timer = vim.loop.new_timer()
+  if not timer then
+    return
+  end
+
+  state.render_timer = timer
+  timer:start(0, RENDER_INTERVAL_MS, vim.schedule_wrap(function()
+    flush_pending()
+  end))
+end
+
+--- Stop the render timer
+stop_render_timer = function()
+  if state.render_timer then
+    state.render_timer:stop()
+    state.render_timer:close()
+    state.render_timer = nil
+  end
+end
+
+--- Process pending chunks and update buffer incrementally
+flush_pending = function()
+  -- Nothing to do if no pending data and no forced redraw
+  if #state.pending_chunks == 0 and not state.needs_full_redraw then
+    -- Stop timer if not streaming anymore
+    if not state.is_streaming then
+      stop_render_timer()
+    end
+    return
+  end
+
+  -- Determine how many chars to process this tick (adaptive based on backlog)
+  local chars_to_process = MIN_CHARS_PER_TICK
+  if state.pending_bytes > 2000 then
+    -- Large backlog: process more to catch up
+    chars_to_process = MAX_CHARS_PER_TICK
+  elseif state.pending_bytes > 500 then
+    chars_to_process = 256
+  end
+
+  -- Consume text from pending queue
+  local processed = 0
+  local text_to_process = {}
+
+  while #state.pending_chunks > 0 and processed < chars_to_process do
+    local chunk = state.pending_chunks[1]
+    local remaining = chars_to_process - processed
+
+    if #chunk <= remaining then
+      -- Take whole chunk
+      table.insert(text_to_process, chunk)
+      processed = processed + #chunk
+      state.pending_bytes = state.pending_bytes - #chunk
+      table.remove(state.pending_chunks, 1)
+    else
+      -- Take partial chunk
+      table.insert(text_to_process, chunk:sub(1, remaining))
+      state.pending_chunks[1] = chunk:sub(remaining + 1)
+      state.pending_bytes = state.pending_bytes - remaining
+      processed = remaining
+      break
+    end
+  end
+
+  -- Process text into lines (newline-aware, avoiding per-char concatenation)
+  local combined = table.concat(text_to_process)
+  if #combined > 0 then
+    -- Split by newlines
+    local segments = vim.split(combined, "\n", { plain = true })
+
+    for i, segment in ipairs(segments) do
+      if i == 1 then
+        -- First segment: append to current_line
+        state.current_line = state.current_line .. segment
+      else
+        -- Subsequent segments: commit current_line and start new
+        table.insert(state.lines, state.current_line)
+        state.current_line = segment
+      end
+    end
+  end
+
+  -- Update buffer (incremental or full redraw)
+  if not state.buf or not vim.api.nvim_buf_is_valid(state.buf) then
+    return
+  end
+
+  -- Skip buffer updates if window is hidden (just accumulate state)
+  if not state.win or not vim.api.nvim_win_is_valid(state.win) then
+    state.needs_full_redraw = true
+    return
+  end
+
+  pcall(vim.api.nvim_set_option_value, "modifiable", true, { buf = state.buf })
+
+  if state.needs_full_redraw then
+    -- Full redraw required
+    local display_lines = vim.deepcopy(state.lines)
+    if state.current_line ~= "" then
+      table.insert(display_lines, state.current_line)
+    end
+    if #display_lines == 0 then
+      display_lines = { "" }
+    end
+    pcall(vim.api.nvim_buf_set_lines, state.buf, 0, -1, false, display_lines)
+    state.rendered_line_count = #state.lines
+    state.rendered_current_line = state.current_line
+    state.needs_full_redraw = false
+  else
+    -- Incremental update
+    local new_committed_count = #state.lines
+
+    -- Append any new committed lines
+    if new_committed_count > state.rendered_line_count then
+      local new_lines = {}
+      for i = state.rendered_line_count + 1, new_committed_count do
+        table.insert(new_lines, state.lines[i])
+      end
+      -- Append new committed lines after existing content
+      local insert_at = state.rendered_line_count
+      if state.rendered_current_line ~= nil then
+        -- There was a current_line rendered; replace it + append
+        insert_at = state.rendered_line_count
+      end
+      pcall(vim.api.nvim_buf_set_lines, state.buf, insert_at, insert_at + (state.rendered_current_line ~= nil and 1 or 0), false, new_lines)
+      state.rendered_line_count = new_committed_count
+      state.rendered_current_line = nil -- Will be set below if needed
+    end
+
+    -- Update or add current_line
+    if state.current_line ~= "" then
+      local line_idx = state.rendered_line_count
+      if state.rendered_current_line ~= nil then
+        -- Update existing last line
+        pcall(vim.api.nvim_buf_set_lines, state.buf, line_idx, line_idx + 1, false, { state.current_line })
+      else
+        -- Append new current_line
+        pcall(vim.api.nvim_buf_set_lines, state.buf, line_idx, line_idx, false, { state.current_line })
+      end
+      state.rendered_current_line = state.current_line
+    elseif state.rendered_current_line ~= nil then
+      -- current_line was cleared (became committed); already handled above
+      state.rendered_current_line = nil
+    end
+  end
+
+  -- Scroll to bottom
+  if state.win and vim.api.nvim_win_is_valid(state.win) then
+    local line_count = vim.api.nvim_buf_line_count(state.buf)
+    pcall(vim.api.nvim_win_set_cursor, state.win, { math.max(1, line_count), 0 })
+  end
+
+  -- Stop timer if no more pending data and not streaming
+  if #state.pending_chunks == 0 and not state.is_streaming then
+    stop_render_timer()
+  end
+end
 
 --- Calculate window dimensions for response display
 --- @return table Window configuration for nvim_open_win
@@ -155,8 +341,17 @@ function M.open(enter)
   end, { buffer = buf, silent = true, desc = "Reply to Ghost response" })
 
   -- Restore existing content if we have any
-  if #state.lines > 0 or state.current_line ~= "" then
+  if #state.lines > 0 or state.current_line ~= "" or #state.pending_chunks > 0 then
+    -- New buffer needs full redraw, reset render tracking
+    state.rendered_line_count = 0
+    state.rendered_current_line = nil
+    state.needs_full_redraw = true
     update_buffer()
+
+    -- Restart timer if there are pending chunks
+    if #state.pending_chunks > 0 then
+      start_render_timer()
+    end
   end
 
   return buf, win
@@ -173,6 +368,9 @@ end
 
 --- Close the response window and clear all content
 function M.close()
+  -- Stop any in-progress rendering
+  stop_render_timer()
+
   M.hide()
   -- Now clear everything
   if state.buf and vim.api.nvim_buf_is_valid(state.buf) then
@@ -185,6 +383,12 @@ function M.close()
   state.is_streaming = false
   state.is_complete = false
   state.current_session_id = nil
+  -- Reset streaming queue state
+  state.pending_chunks = {}
+  state.pending_bytes = 0
+  state.rendered_line_count = 0
+  state.rendered_current_line = nil
+  state.needs_full_redraw = false
 end
 
 --- Check if response window is open
@@ -196,7 +400,7 @@ end
 --- Check if there is content (even if window is hidden)
 --- @return boolean True if has content
 function M.has_content()
-  return #state.lines > 0 or state.current_line ~= ""
+  return #state.lines > 0 or state.current_line ~= "" or #state.pending_chunks > 0
 end
 
 --- Check if response is currently streaming
@@ -232,41 +436,53 @@ function M.show()
   end
 end
 
---- Update the buffer content
+--- Update the buffer content (full redraw for non-streaming updates)
+--- Used by tool calls, separators, headers, and transcript loading
 update_buffer = function()
   if not state.buf or not vim.api.nvim_buf_is_valid(state.buf) then
     return
   end
 
-  -- Build display lines
-  local display_lines = vim.deepcopy(state.lines)
+  -- Mark for full redraw and trigger via timer or immediate
+  state.needs_full_redraw = true
 
-  -- Add current incomplete line if any
-  if state.current_line ~= "" then
-    table.insert(display_lines, state.current_line)
+  -- If timer is running, let it handle the redraw
+  if state.render_timer then
+    return
   end
 
-  -- Ensure at least one line
-  if #display_lines == 0 then
-    display_lines = { "" }
-  end
-
-  -- Update buffer
+  -- Otherwise do immediate full redraw
   vim.schedule(function()
-    if state.buf and vim.api.nvim_buf_is_valid(state.buf) then
-      pcall(vim.api.nvim_set_option_value, "modifiable", true, { buf = state.buf })
-      pcall(vim.api.nvim_buf_set_lines, state.buf, 0, -1, false, display_lines)
+    if not state.buf or not vim.api.nvim_buf_is_valid(state.buf) then
+      return
+    end
 
-      -- Scroll to bottom
-      if state.win and vim.api.nvim_win_is_valid(state.win) then
-        local line_count = vim.api.nvim_buf_line_count(state.buf)
-        pcall(vim.api.nvim_win_set_cursor, state.win, { line_count, 0 })
-      end
+    local display_lines = vim.deepcopy(state.lines)
+    if state.current_line ~= "" then
+      table.insert(display_lines, state.current_line)
+    end
+    if #display_lines == 0 then
+      display_lines = { "" }
+    end
+
+    pcall(vim.api.nvim_set_option_value, "modifiable", true, { buf = state.buf })
+    pcall(vim.api.nvim_buf_set_lines, state.buf, 0, -1, false, display_lines)
+
+    -- Update render tracking
+    state.rendered_line_count = #state.lines
+    state.rendered_current_line = state.current_line ~= "" and state.current_line or nil
+    state.needs_full_redraw = false
+
+    -- Scroll to bottom
+    if state.win and vim.api.nvim_win_is_valid(state.win) then
+      local line_count = vim.api.nvim_buf_line_count(state.buf)
+      pcall(vim.api.nvim_win_set_cursor, state.win, { math.max(1, line_count), 0 })
     end
   end)
 end
 
 --- Append text to the response (handles streaming)
+--- Text is queued and rendered smoothly via timer-based updates
 --- @param text string The text to append
 function M.append_text(text)
   if not text or text == "" then
@@ -279,26 +495,19 @@ function M.append_text(text)
 
   -- Open window if not already open (don't steal focus if user closed it)
   -- Only open window for first content; if user closed it, just buffer the content
-  if not M.is_open() and not M.has_content() then
+  if not M.is_open() and not M.has_content() and #state.pending_chunks == 0 then
     -- First content - open and focus
     M.open(true)
   end
-  -- If window was closed but has content, we just update the buffer below
+  -- If window was closed but has content, we just queue the text
   -- Content will be available when user reopens with <leader>ar
 
-  -- Process text character by character for proper line handling
-  for i = 1, #text do
-    local char = text:sub(i, i)
-    if char == "\n" then
-      -- Complete current line and start new one
-      table.insert(state.lines, state.current_line)
-      state.current_line = ""
-    else
-      state.current_line = state.current_line .. char
-    end
-  end
+  -- Queue text for smooth rendering
+  table.insert(state.pending_chunks, text)
+  state.pending_bytes = state.pending_bytes + #text
 
-  update_buffer()
+  -- Start render timer if not already running
+  start_render_timer()
 end
 
 --- Add a tool call status line
@@ -382,12 +591,22 @@ end
 
 --- Clear the response buffer content (but keep window open if it is)
 function M.clear()
+  -- Stop any in-progress rendering
+  stop_render_timer()
+
+  -- Reset all state
   state.lines = {}
   state.current_line = ""
   state.tool_calls = {}
   state.is_streaming = false
   state.is_complete = false
   state.current_session_id = nil
+  -- Reset streaming queue state
+  state.pending_chunks = {}
+  state.pending_bytes = 0
+  state.rendered_line_count = 0
+  state.rendered_current_line = nil
+  state.needs_full_redraw = false
 
   if state.buf and vim.api.nvim_buf_is_valid(state.buf) then
     vim.schedule(function()
@@ -449,6 +668,28 @@ end
 --- Handle completion of a response
 --- @param response table The final response from receiver
 function M.handle_response(response)
+  -- Flush all pending chunks immediately before completion
+  while #state.pending_chunks > 0 do
+    -- Process all remaining text directly (bypass timer for completion)
+    local combined = table.concat(state.pending_chunks)
+    state.pending_chunks = {}
+    state.pending_bytes = 0
+
+    -- Process into lines
+    local segments = vim.split(combined, "\n", { plain = true })
+    for i, segment in ipairs(segments) do
+      if i == 1 then
+        state.current_line = state.current_line .. segment
+      else
+        table.insert(state.lines, state.current_line)
+        state.current_line = segment
+      end
+    end
+  end
+
+  -- Stop the render timer
+  stop_render_timer()
+
   -- Mark as complete
   state.is_streaming = false
   state.is_complete = true
@@ -461,6 +702,10 @@ function M.handle_response(response)
     M.add_separator()
     M.append_text(string.format("📝 *Edited: %s*\n", response.file_path or "unknown"))
   end
+
+  -- Force full redraw to ensure everything is displayed
+  state.needs_full_redraw = true
+  update_buffer()
 
   -- Notify user if window is closed
   if not M.is_open() and M.has_content() then
@@ -501,7 +746,7 @@ function M.load_transcript(session_id)
     return false, err
   end
 
-  -- Clear current response content
+  -- Clear current response content (also stops timer and resets state)
   M.clear()
 
   -- Split content into lines and populate the response buffer
@@ -513,6 +758,10 @@ function M.load_transcript(session_id)
   state.is_streaming = false
   state.is_complete = true
   state.current_session_id = session_id -- Track which session is displayed (US-008)
+  -- Mark for full redraw since we loaded content directly
+  state.needs_full_redraw = true
+  state.rendered_line_count = 0
+  state.rendered_current_line = nil
 
   -- Update buffer if window is open
   if M.is_open() then

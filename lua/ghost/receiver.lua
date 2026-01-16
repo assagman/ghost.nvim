@@ -67,9 +67,9 @@ local function process_text_content(content, request_id, ghost_session_id)
 
     if target_session_id then
       transcript.append_response_text(target_session_id, content.text)
-      -- Periodically flush transcript buffer to disk (every ~1KB)
-      -- This ensures streaming updates are persisted without waiting for completion
-      transcript.flush_response_buffer(target_session_id)
+      -- Conditionally flush transcript buffer based on size/time thresholds
+      -- This batches writes to reduce IO jank during streaming
+      transcript.maybe_flush_response_buffer(target_session_id)
     end
 
     -- Emit text chunk for streaming display

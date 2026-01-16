@@ -1,11 +1,16 @@
 --- Ghost transcript module
 --- Handles writing full conversation transcripts to disk per session
+--- Implements batched writes to reduce IO during streaming
 --- @module ghost.transcript
 
 local M = {}
 
 local persist = require("ghost.persist")
 local session = require("ghost.session")
+
+-- Batching constants (not exposed to user config)
+local FLUSH_THRESHOLD_BYTES = 4096 -- Flush when buffer exceeds this size
+local FLUSH_INTERVAL_MS = 250 -- Max time between flushes during streaming
 
 --- @class TranscriptEntry
 --- @field timestamp number Unix timestamp
@@ -15,8 +20,13 @@ local session = require("ghost.session")
 --- @field tool_name string|nil Tool name for tool_call entries
 --- @field tool_status string|nil Tool status for tool_call entries
 
+--- @class ResponseBuffer
+--- @field chunks string[] Table of text chunks (avoids repeated string concat)
+--- @field bytes number Total bytes in chunks
+--- @field last_flush_time number Timestamp of last flush (ms, from vim.loop.now())
+
 --- Buffer to accumulate streaming response text before writing
---- @type table<string, string> Map of session_id -> accumulated text
+--- @type table<string, ResponseBuffer> Map of session_id -> buffer state
 local response_buffers = {}
 
 --- Format timestamp for transcript
@@ -94,37 +104,83 @@ function M.start_response(session_id, request_id)
 
   local content = table.concat(lines, "")
 
-  -- Initialize response buffer for this session
-  response_buffers[session_id] = ""
+  -- Initialize response buffer for this session (table-based for efficiency)
+  response_buffers[session_id] = {
+    chunks = {},
+    bytes = 0,
+    last_flush_time = vim.loop.now(),
+  }
 
   return append_to_transcript(session_id, content)
 end
 
 --- Append streaming text to the response buffer
+--- Does not write to disk - use flush or maybe_flush to persist
 --- @param session_id string The session ID
 --- @param text string The text chunk to append
 function M.append_response_text(session_id, text)
-  if not response_buffers[session_id] then
-    response_buffers[session_id] = ""
+  if not text or text == "" then
+    return
   end
-  response_buffers[session_id] = response_buffers[session_id] .. text
+
+  local buf = response_buffers[session_id]
+  if not buf then
+    -- Initialize buffer if not already done (defensive)
+    buf = {
+      chunks = {},
+      bytes = 0,
+      last_flush_time = vim.loop.now(),
+    }
+    response_buffers[session_id] = buf
+  end
+
+  table.insert(buf.chunks, text)
+  buf.bytes = buf.bytes + #text
 end
 
---- Flush the response buffer to disk (called periodically or on completion)
+--- Flush the response buffer to disk (unconditional - called on completion or before tool calls)
 --- @param session_id string The session ID
 --- @return boolean success True if flushed successfully
 --- @return string|nil error Error message if flush failed
 function M.flush_response_buffer(session_id)
-  local buffer = response_buffers[session_id]
-  if not buffer or buffer == "" then
+  local buf = response_buffers[session_id]
+  if not buf or buf.bytes == 0 then
     return true, nil -- Nothing to flush
   end
 
-  local ok, err = append_to_transcript(session_id, buffer)
+  -- Combine chunks efficiently
+  local content = table.concat(buf.chunks)
+
+  local ok, err = append_to_transcript(session_id, content)
   if ok then
-    response_buffers[session_id] = "" -- Clear buffer after successful write
+    -- Clear buffer after successful write
+    buf.chunks = {}
+    buf.bytes = 0
+    buf.last_flush_time = vim.loop.now()
   end
   return ok, err
+end
+
+--- Conditionally flush the response buffer based on size/time thresholds
+--- Called during streaming to batch writes without blocking UI
+--- @param session_id string The session ID
+--- @return boolean success True if no flush needed or flush succeeded
+--- @return string|nil error Error message if flush failed
+function M.maybe_flush_response_buffer(session_id)
+  local buf = response_buffers[session_id]
+  if not buf or buf.bytes == 0 then
+    return true, nil -- Nothing to flush
+  end
+
+  local now = vim.loop.now()
+  local time_since_flush = now - buf.last_flush_time
+
+  -- Flush if buffer exceeds threshold OR enough time has passed
+  if buf.bytes >= FLUSH_THRESHOLD_BYTES or time_since_flush >= FLUSH_INTERVAL_MS then
+    return M.flush_response_buffer(session_id)
+  end
+
+  return true, nil -- No flush needed yet
 end
 
 --- Write a tool call to the transcript
@@ -201,7 +257,11 @@ end
 
 --- Clean up buffers for a session (e.g., when session is deleted)
 --- @param session_id string The session ID
-function M.cleanup_session(session_id)
+--- @param flush boolean|nil Whether to flush before cleanup (default false)
+function M.cleanup_session(session_id, flush)
+  if flush then
+    M.flush_response_buffer(session_id)
+  end
   response_buffers[session_id] = nil
 end
 
