@@ -1,0 +1,27 @@
+# Pre-commit hooks for ghost.nvim
+# https://pre-commit.com/
+#
+# Install: pre-commit install
+# Run all: pre-commit run --all-files
+#
+# Prerequisites: stylua, luacheck must be installed locally
+
+repos:
+  - repo: local
+    hooks:
+      # StyLua formatter - auto-fixes formatting
+      # If files are modified, commit will be stopped for re-staging
+      - id: stylua
+        name: stylua (format)
+        entry: stylua
+        language: system
+        types: [lua]
+        args: []
+
+      # Luacheck linter - blocks on any diagnostics
+      - id: luacheck
+        name: luacheck (lint)
+        entry: luacheck
+        language: system
+        types: [lua]
+        args: ["--no-color"]
