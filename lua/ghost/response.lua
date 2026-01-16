@@ -690,18 +690,27 @@ function M.handle_response(response)
   -- Stop the render timer
   stop_render_timer()
 
-  -- Mark as complete
+  -- Add completion indicators directly (bypass append_text to avoid resetting state)
+  if response.type == "explanation" then
+    -- Complete current line first
+    if state.current_line ~= "" then
+      table.insert(state.lines, state.current_line)
+      state.current_line = ""
+    end
+    table.insert(state.lines, "---")
+    table.insert(state.lines, "*Response complete*")
+  elseif response.type == "edit" then
+    if state.current_line ~= "" then
+      table.insert(state.lines, state.current_line)
+      state.current_line = ""
+    end
+    table.insert(state.lines, "---")
+    table.insert(state.lines, string.format("📝 *Edited: %s*", response.file_path or "unknown"))
+  end
+
+  -- Mark as complete (after adding content so it's not overwritten)
   state.is_streaming = false
   state.is_complete = true
-
-  if response.type == "explanation" then
-    -- Already streamed, just add completion indicator
-    M.add_separator()
-    M.append_text("*Response complete*\n")
-  elseif response.type == "edit" then
-    M.add_separator()
-    M.append_text(string.format("📝 *Edited: %s*\n", response.file_path or "unknown"))
-  end
 
   -- Force full redraw to ensure everything is displayed
   state.needs_full_redraw = true
