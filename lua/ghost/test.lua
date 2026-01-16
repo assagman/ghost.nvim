@@ -60,7 +60,7 @@ function M.test_prompt(prompt_text)
   local output_lines = {}
 
   acp.send_prompt(prompt_text, nil, {
-    on_update = function(update)
+    on_update = function(update) -- luacheck: ignore 561
       -- ACP update format: update.update.sessionUpdate indicates type
       local inner = update.update or update
       local update_type = inner.sessionUpdate
@@ -367,7 +367,7 @@ function M.run_all()
   print("[1/3] Testing connection...")
   local acp = require("ghost.acp")
 
-  acp.initialize(function(err, capabilities)
+  acp.initialize(function(err, _capabilities)
     if err then
       print("FAIL: Connection - " .. err)
       return

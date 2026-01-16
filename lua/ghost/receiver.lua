@@ -87,7 +87,7 @@ end
 --- Process an ACP session/update notification
 --- @param update table The update notification params
 --- @param request_id string|nil The request ID
-local function process_session_update(update, request_id)
+local function process_session_update(update, request_id) -- luacheck: ignore 561
   state.current_request_id = request_id
 
   -- Extract ghost_session_id from update (US-009)
@@ -256,7 +256,7 @@ end
 --- @param result table The final result
 --- @param request_id string|nil The request ID
 --- @param ghost_session_id string|nil The ghost session ID
-local function process_completion(result, request_id, ghost_session_id)
+local function process_completion(_result, request_id, ghost_session_id)
   -- Flush any remaining transcript buffer for the correct session (US-009)
   local target_session_id = ghost_session_id
   if not target_session_id then

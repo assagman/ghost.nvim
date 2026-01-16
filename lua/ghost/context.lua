@@ -146,7 +146,7 @@ end
 --- @param bufnr number|nil Buffer number (defaults to current buffer)
 --- @param include_selection boolean|nil Whether to capture visual selection (default false)
 --- @return GhostContext Captured context
-function M.capture(bufnr, include_selection)
+function M.capture(bufnr, include_selection) -- luacheck: ignore 561
   -- Safely get buffer number with fallback
   local ok, bufnr_result = pcall(function()
     return bufnr or vim.api.nvim_get_current_buf()

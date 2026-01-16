@@ -271,7 +271,7 @@ end
 
 --- Handle stderr data from the subprocess
 --- @param data string The error data received
-local function on_stderr(_, data)
+local function on_stderr(_, _data)
   -- OpenCode writes logs to stderr, we ignore them
   -- Uncomment below for debugging:
   -- if data then
@@ -1030,7 +1030,7 @@ end
 
 --- Legacy: Set data receive callback
 --- @param callback fun(data: string)|nil The callback function
-function M.set_on_data(callback)
+function M.set_on_data(_callback)
   -- This is handled by on_stdout now
 end
 

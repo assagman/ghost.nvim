@@ -229,7 +229,7 @@ end
 --- @param mark_as_error boolean|nil If true, mark them as errors instead of just removing
 function M.clear_active(mark_as_error)
   if mark_as_error then
-    for request_id, req in pairs(state.requests) do
+    for _, req in pairs(state.requests) do
       req.completed_at = os.time()
       req.status = "error"
       req.error_message = "Request cleared (timed out or disconnected)"
@@ -367,7 +367,7 @@ end
 
 --- Build the content lines for the status window
 --- @return string[] Lines to display in the status window
-function M.build_status_content()
+function M.build_status_content() -- luacheck: ignore 561
   local acp = require("ghost.acp")
   local lines = {}
 
