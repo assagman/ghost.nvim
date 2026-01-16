@@ -172,6 +172,12 @@ function M.open_prompt()
     pcall(vim.keymap.set, "n", "q", function()
       M.close_prompt()
     end, { buffer = buf, silent = true, desc = "Close Ghost prompt" })
+    pcall(vim.keymap.set, "n", "<Esc>", function()
+      M.close_prompt()
+    end, { buffer = buf, silent = true, desc = "Close Ghost prompt" })
+    pcall(vim.keymap.set, "n", "<C-c>", function()
+      M.close_prompt()
+    end, { buffer = buf, silent = true, desc = "Close Ghost prompt" })
 
     -- Set up BufWriteCmd autocmd to intercept save
     setup_write_autocmd(buf)
