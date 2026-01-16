@@ -340,6 +340,10 @@ function M.open(enter)
 		M.hide() -- hide instead of close to preserve content
 	end, { buffer = buf, silent = true, desc = "Hide Ghost response" })
 
+	pcall(vim.keymap.set, "n", "<C-c>", function()
+		M.hide() -- hide instead of close to preserve content
+	end, { buffer = buf, silent = true, desc = "Hide Ghost response" })
+
 	-- Reply keymap - continue the conversation (US-008)
 	pcall(vim.keymap.set, "n", "r", function()
 		if not state.on_reply then
