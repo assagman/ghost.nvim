@@ -211,6 +211,47 @@ Shows:
 - Connection state (CONNECTED/INITIALIZING/DISCONNECTED)
 - Last error message (if any)
 
+## Development
+
+### Prerequisites
+
+Install code quality tools:
+
+```bash
+# macOS
+brew install stylua luacheck
+pip install pre-commit
+
+# Or manually:
+# stylua: https://github.com/JohnnyMorganz/StyLua
+# luacheck: https://github.com/mpeterv/luacheck
+# pre-commit: https://pre-commit.com/
+```
+
+### Setup
+
+```bash
+# Install pre-commit hooks (runs stylua + luacheck on commit)
+make precommit-install
+```
+
+### Makefile Targets
+
+| Target | Description |
+|--------|-------------|
+| `make format` | Format Lua files with stylua |
+| `make format-check` | Check formatting (no changes) |
+| `make lint` | Run luacheck linter |
+| `make check` | Run format-check + lint |
+| `make precommit` | Run pre-commit on all files |
+
+### Code Style
+
+- **Formatter**: [StyLua](https://github.com/JohnnyMorganz/StyLua) - 2-space indent, double quotes
+- **Linter**: [luacheck](https://github.com/mpeterv/luacheck) - LuaJIT std, strict warnings
+
+Configuration files: `.stylua.toml`, `.luacheckrc`
+
 ## License
 
 MIT

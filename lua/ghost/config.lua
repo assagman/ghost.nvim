@@ -4,11 +4,12 @@
 local M = {}
 
 --- Default configuration for Ghost
- --- @class GhostConfig
- --- @field keybind string Keybind to open the prompt buffer
- --- @field backend "opencode"|"codex" Which ACP backend to use
- --- @field acp_command string|table Command to run for ACP (default: "opencode"). Table format bypasses "acp" argument for custom scripts.
- --- @field acp_cwd string|nil Working directory for ACP subprocess (default: current directory)
+--- @class GhostConfig
+--- @field keybind string Keybind to open the prompt buffer
+--- @field backend "opencode"|"codex" Which ACP backend to use
+--- @field acp_command string|table Command to run for ACP (default: "opencode").
+---        Table format bypasses "acp" argument for custom scripts.
+--- @field acp_cwd string|nil Working directory for ACP subprocess (default: current directory)
 --- @field agent string|nil Agent name to use (e.g., "NULL", "plan", "explore", "general")
 --- @field model string|nil Model name/id to request (e.g., "gpt-4.1", "o1")
 --- @field autoread boolean Enable autoread so buffers reload when agent edits files

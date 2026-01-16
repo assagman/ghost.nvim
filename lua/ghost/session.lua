@@ -101,7 +101,7 @@ function M.create_session(opts)
         s.acp_initialized = false
       end
     end,
-    on_error = function(error_msg)
+    on_error = function(_error_msg)
       local s = M.sessions[session_id]
       if s then
         s.status = "error"

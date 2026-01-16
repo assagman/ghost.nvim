@@ -28,7 +28,7 @@ local function check_executable(name, desc, required)
   end
 end
 
-function M.check()
+function M.check() -- luacheck: ignore 561
   start("ghost.nvim")
 
   -- Check Neovim version

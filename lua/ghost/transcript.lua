@@ -213,11 +213,7 @@ end
 --- @return string|nil error Error message if write failed
 function M.write_error(session_id, error_message)
   local timestamp = os.time()
-  local line = string.format(
-    "\n❌ **Error** (%s): %s\n\n",
-    format_timestamp(timestamp),
-    error_message
-  )
+  local line = string.format("\n❌ **Error** (%s): %s\n\n", format_timestamp(timestamp), error_message)
 
   -- Flush any pending response text before writing error
   M.flush_response_buffer(session_id)

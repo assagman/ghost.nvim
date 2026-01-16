@@ -21,7 +21,7 @@ local function sanitize_path(path)
   -- Replace remaining slashes with underscores
   sanitized = sanitized:gsub("/", "_")
   -- Remove or replace other potentially problematic characters
-  sanitized = sanitized:gsub("[<>:\"|?*\\]", "_")
+  sanitized = sanitized:gsub('[<>:"|?*\\]', "_")
   -- Collapse multiple underscores
   sanitized = sanitized:gsub("_+", "_")
   -- Remove trailing underscore
