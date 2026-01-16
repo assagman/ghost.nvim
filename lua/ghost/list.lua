@@ -78,10 +78,7 @@ local function open_snacks_picker()
       vim.schedule(function()
         local load_ok, load_err = response_display.load_transcript(sess.id)
         if not load_ok then
-          vim.notify(
-            "Ghost: Failed to load transcript - " .. (load_err or "unknown error"),
-            vim.log.levels.WARN
-          )
+          vim.notify("Ghost: Failed to load transcript - " .. (load_err or "unknown error"), vim.log.levels.WARN)
         end
         response_display.open()
       end)
