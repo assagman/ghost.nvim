@@ -7,9 +7,18 @@ local M = {}
 local config = require("ghost.config")
 
 -- Streaming render constants (not exposed to user config)
+-- NOTE: Early design docs referenced ~33ms (30fps) and 256-2048 chars/tick.
+-- In practice, 16ms (~60fps) with lower per-tick budget produces smoother rendering.
 local RENDER_INTERVAL_MS = 16 -- ~60fps for smooth typewriter effect
 local MAX_CHARS_PER_TICK = 128 -- Max chars to process per timer tick (when catching up)
 local MIN_CHARS_PER_TICK = 12 -- Min chars per tick (~750 chars/sec for natural typing feel)
+
+-- Adaptive backlog thresholds for smooth rendering
+local BACKLOG_LARGE_THRESHOLD = 1000 -- Bytes: trigger max speed catchup
+local BACKLOG_MEDIUM_THRESHOLD = 300 -- Bytes: trigger medium speed
+local BACKLOG_SMALL_THRESHOLD = 100 -- Bytes: trigger slightly faster speed
+local CHARS_PER_TICK_MEDIUM = 48 -- Chars/tick at medium backlog
+local CHARS_PER_TICK_SMALL = 24 -- Chars/tick at small backlog
 
 --- @class GhostResponseState
 --- @field buf number|nil The response buffer number
@@ -51,6 +60,22 @@ local flush_pending
 local start_render_timer
 local stop_render_timer
 
+--- Reset all streaming and content state
+--- Used by both clear() and close() to avoid duplication
+local function reset_state()
+  state.lines = {}
+  state.current_line = ""
+  state.tool_calls = {}
+  state.is_streaming = false
+  state.is_complete = false
+  state.current_session_id = nil
+  state.pending_chunks = {}
+  state.pending_bytes = 0
+  state.rendered_line_count = 0
+  state.rendered_current_line = nil
+  state.needs_full_redraw = false
+end
+
 --- Start the render timer for smooth streaming
 start_render_timer = function()
   if state.render_timer then
@@ -90,15 +115,15 @@ flush_pending = function()
 
   -- Determine how many chars to process this tick (adaptive based on backlog)
   local chars_to_process = MIN_CHARS_PER_TICK
-  if state.pending_bytes > 1000 then
+  if state.pending_bytes > BACKLOG_LARGE_THRESHOLD then
     -- Large backlog: process more to catch up (but still smooth)
     chars_to_process = MAX_CHARS_PER_TICK
-  elseif state.pending_bytes > 300 then
+  elseif state.pending_bytes > BACKLOG_MEDIUM_THRESHOLD then
     -- Medium backlog: moderate speed
-    chars_to_process = 48
-  elseif state.pending_bytes > 100 then
+    chars_to_process = CHARS_PER_TICK_MEDIUM
+  elseif state.pending_bytes > BACKLOG_SMALL_THRESHOLD then
     -- Small backlog: slightly faster
-    chars_to_process = 24
+    chars_to_process = CHARS_PER_TICK_SMALL
   end
 
   -- Consume text from pending queue
@@ -167,7 +192,7 @@ flush_pending = function()
     end
     pcall(vim.api.nvim_buf_set_lines, state.buf, 0, -1, false, display_lines)
     state.rendered_line_count = #state.lines
-    state.rendered_current_line = state.current_line
+    state.rendered_current_line = state.current_line ~= "" and state.current_line or nil
     state.needs_full_redraw = false
   else
     -- Incremental update
@@ -381,18 +406,7 @@ function M.close()
     pcall(vim.api.nvim_buf_delete, state.buf, { force = true })
   end
   state.buf = nil
-  state.lines = {}
-  state.current_line = ""
-  state.tool_calls = {}
-  state.is_streaming = false
-  state.is_complete = false
-  state.current_session_id = nil
-  -- Reset streaming queue state
-  state.pending_chunks = {}
-  state.pending_bytes = 0
-  state.rendered_line_count = 0
-  state.rendered_current_line = nil
-  state.needs_full_redraw = false
+  reset_state()
 end
 
 --- Check if response window is open
@@ -628,18 +642,7 @@ function M.clear()
   stop_render_timer()
 
   -- Reset all state
-  state.lines = {}
-  state.current_line = ""
-  state.tool_calls = {}
-  state.is_streaming = false
-  state.is_complete = false
-  state.current_session_id = nil
-  -- Reset streaming queue state
-  state.pending_chunks = {}
-  state.pending_bytes = 0
-  state.rendered_line_count = 0
-  state.rendered_current_line = nil
-  state.needs_full_redraw = false
+  reset_state()
 
   if state.buf and vim.api.nvim_buf_is_valid(state.buf) then
     vim.schedule(function()
@@ -702,41 +705,22 @@ end
 --- @param response table The final response from receiver
 function M.handle_response(response)
   -- Flush all pending chunks immediately before completion
-  while #state.pending_chunks > 0 do
-    -- Process all remaining text directly (bypass timer for completion)
-    local combined = table.concat(state.pending_chunks)
-    state.pending_chunks = {}
-    state.pending_bytes = 0
-
-    -- Process into lines
-    local segments = vim.split(combined, "\n", { plain = true })
-    for i, segment in ipairs(segments) do
-      if i == 1 then
-        state.current_line = state.current_line .. segment
-      else
-        table.insert(state.lines, state.current_line)
-        state.current_line = segment
-      end
-    end
-  end
+  flush_pending_sync()
 
   -- Stop the render timer
   stop_render_timer()
 
+  -- Complete current line first (before adding completion indicators)
+  if state.current_line ~= "" then
+    table.insert(state.lines, state.current_line)
+    state.current_line = ""
+  end
+
   -- Add completion indicators directly (bypass append_text to avoid resetting state)
   if response.type == "explanation" then
-    -- Complete current line first
-    if state.current_line ~= "" then
-      table.insert(state.lines, state.current_line)
-      state.current_line = ""
-    end
     table.insert(state.lines, "---")
     table.insert(state.lines, "*Response complete*")
   elseif response.type == "edit" then
-    if state.current_line ~= "" then
-      table.insert(state.lines, state.current_line)
-      state.current_line = ""
-    end
     table.insert(state.lines, "---")
     table.insert(state.lines, string.format("📝 *Edited: %s*", response.file_path or "unknown"))
   end

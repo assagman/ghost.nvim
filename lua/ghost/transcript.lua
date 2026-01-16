@@ -257,8 +257,12 @@ end
 
 --- Clean up buffers for a session (e.g., when session is deleted)
 --- @param session_id string The session ID
---- @param flush boolean|nil Whether to flush before cleanup (default false)
+--- @param flush boolean|nil Whether to flush before cleanup (default true for data safety)
 function M.cleanup_session(session_id, flush)
+  -- Default to flushing to avoid accidental data loss
+  if flush == nil then
+    flush = true
+  end
   if flush then
     M.flush_response_buffer(session_id)
   end
