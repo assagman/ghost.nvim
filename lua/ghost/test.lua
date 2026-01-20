@@ -45,6 +45,61 @@ function M.test_session()
   end)
 end
 
+--- Handle test update events with a dispatch table
+--- @param update table The update event from ACP
+--- @param output_lines table Table to collect output text
+local function handle_test_update(update, output_lines)
+  local inner = update.update or update
+  local update_type = inner.sessionUpdate
+
+  local handlers = {
+    message_delta = function()
+      local content = inner.content
+      if content and type(content) == "table" then
+        for _, item in ipairs(content) do
+          if item.type == "text" and item.text then
+            io.write(item.text)
+            io.flush()
+            table.insert(output_lines, item.text)
+          end
+        end
+      end
+    end,
+    message = function()
+      local content = inner.content
+      if content and type(content) == "table" then
+        for _, item in ipairs(content) do
+          if item.type == "text" and item.text then
+            io.write(item.text)
+            io.flush()
+            table.insert(output_lines, item.text)
+          end
+        end
+      end
+    end,
+    tool_call = function()
+      print("\n[Tool: " .. (inner.title or "unknown") .. " (" .. (inner.kind or "?") .. ")]")
+    end,
+    tool_call_update = function()
+      local status = inner.status or "unknown"
+      print("[Tool update: " .. (inner.toolCallId or "?") .. " - " .. status .. "]")
+    end,
+    plan_update = function()
+      print("[Plan updated]")
+    end,
+    plan = function()
+      print("[Plan updated]")
+    end,
+  }
+
+  local handler = handlers[update_type]
+  if handler then
+    handler()
+  else
+    print("[Update: " .. vim.inspect(update):sub(1, 200) .. "]")
+  end
+end
+
 --- Test sending a simple prompt with streaming output
 --- Usage: :lua require('ghost.test').test_prompt()
 function M.test_prompt(prompt_text)
@@ -60,36 +115,8 @@ function M.test_prompt(prompt_text)
   local output_lines = {}
 
   acp.send_prompt(prompt_text, nil, {
-    on_update = function(update) -- luacheck: ignore 561
-      -- ACP update format: update.update.sessionUpdate indicates type
-      local inner = update.update or update
-      local update_type = inner.sessionUpdate
-
-      if update_type == "message_delta" or update_type == "message" then
-        -- Handle streaming text content
-        local content = inner.content
-        if content and type(content) == "table" then
-          for _, item in ipairs(content) do
-            if item.type == "text" and item.text then
-              io.write(item.text)
-              io.flush()
-              table.insert(output_lines, item.text)
-            end
-          end
-        end
-      elseif update_type == "tool_call" then
-        -- New tool invocation
-        print("\n[Tool: " .. (inner.title or "unknown") .. " (" .. (inner.kind or "?") .. ")]")
-      elseif update_type == "tool_call_update" then
-        -- Tool progress/completion
-        local status = inner.status or "unknown"
-        print("[Tool update: " .. (inner.toolCallId or "?") .. " - " .. status .. "]")
-      elseif update_type == "plan_update" or update_type == "plan" then
-        print("[Plan updated]")
-      else
-        -- Debug: print raw update for unknown types
-        print("[Update: " .. vim.inspect(update):sub(1, 200) .. "]")
-      end
+    on_update = function(update)
+      handle_test_update(update, output_lines)
     end,
 
     on_complete = function(result)

@@ -367,37 +367,38 @@ end
 
 --- Build the content lines for the status window
 --- @return string[] Lines to display in the status window
-function M.build_status_content() -- luacheck: ignore 561
-  local acp = require("ghost.acp")
-  local lines = {}
-
-  -- Header
+local function build_header_section(lines)
   table.insert(lines, "Ghost Status")
   table.insert(lines, string.rep("-", 40))
   table.insert(lines, "")
+end
 
-  -- Backend
-  local acp_status = acp.status()
+local function build_backend_section(lines, acp_status)
   table.insert(lines, "Backend:")
   table.insert(lines, string.format("  %s", acp_status.backend or "opencode"))
   table.insert(lines, "")
+end
 
-  -- Connection state with clear labels
+local function build_connection_connected(lines, acp_status)
+  table.insert(lines, "  Status: CONNECTED")
+  local agent_name = acp_status.agent_info and acp_status.agent_info.name or "unknown"
+  local version = acp_status.agent_info and acp_status.agent_info.version or ""
+  table.insert(lines, string.format("  Agent: %s %s", agent_name, version))
+  if acp_status.session_id then
+    table.insert(lines, string.format("  Session: %s", acp_status.session_id:sub(1, 12) .. "..."))
+  else
+    table.insert(lines, "  Session: none")
+  end
+  table.insert(lines, "  Transport: stdio (acp subprocess)")
+  if acp_status.pending_requests > 0 then
+    table.insert(lines, string.format("  Pending requests: %d", acp_status.pending_requests))
+  end
+end
+
+local function build_connection_section(lines, acp_status)
   table.insert(lines, "Connection State:")
   if acp_status.initialized then
-    table.insert(lines, "  Status: CONNECTED")
-    local agent_name = acp_status.agent_info and acp_status.agent_info.name or "unknown"
-    local version = acp_status.agent_info and acp_status.agent_info.version or ""
-    table.insert(lines, string.format("  Agent: %s %s", agent_name, version))
-    if acp_status.session_id then
-      table.insert(lines, string.format("  Session: %s", acp_status.session_id:sub(1, 12) .. "..."))
-    else
-      table.insert(lines, "  Session: none")
-    end
-    table.insert(lines, "  Transport: stdio (acp subprocess)")
-    if acp_status.pending_requests > 0 then
-      table.insert(lines, string.format("  Pending requests: %d", acp_status.pending_requests))
-    end
+    build_connection_connected(lines, acp_status)
   elseif acp_status.initializing then
     table.insert(lines, "  Status: INITIALIZING")
     table.insert(lines, "  Starting ACP subprocess...")
@@ -410,19 +411,22 @@ function M.build_status_content() -- luacheck: ignore 561
     table.insert(lines, "  Will auto-start when you send a prompt")
   end
   table.insert(lines, "")
+end
 
-  -- Last Error (if present)
-  if acp_status.last_error then
-    table.insert(lines, "Last Error:")
-    local error_ago = acp_status.last_error_time and (os.time() - acp_status.last_error_time) or 0
-    table.insert(lines, string.format("  %s", acp_status.last_error))
-    if error_ago > 0 then
-      table.insert(lines, string.format("  (%s)", format_ago(error_ago)))
-    end
-    table.insert(lines, "")
+local function build_error_section(lines, acp_status)
+  if not acp_status.last_error then
+    return
   end
+  table.insert(lines, "Last Error:")
+  local error_ago = acp_status.last_error_time and (os.time() - acp_status.last_error_time) or 0
+  table.insert(lines, string.format("  %s", acp_status.last_error))
+  if error_ago > 0 then
+    table.insert(lines, string.format("  (%s)", format_ago(error_ago)))
+  end
+  table.insert(lines, "")
+end
 
-  -- Active requests
+local function build_active_requests_section(lines)
   table.insert(lines, "Active Requests:")
   local active = M.get_all_active()
   if #active == 0 then
@@ -441,35 +445,58 @@ function M.build_status_content() -- luacheck: ignore 561
     end
   end
   table.insert(lines, "")
+end
 
-  -- Last completed request
+local function build_last_completed_status(last)
+  if last.status == "completed" then
+    local status_str = string.format("%s", last.response_type or "complete")
+    if last.response_summary then
+      status_str = status_str .. " - " .. last.response_summary
+    end
+    return status_str
+  else
+    local status_str = "error"
+    if last.error_message then
+      status_str = status_str .. " - " .. last.error_message
+    end
+    return status_str
+  end
+end
+
+local function build_last_completed_section(lines)
   table.insert(lines, "Last Completed:")
   local last = state.last_completed
   if not last then
     table.insert(lines, "  None")
-  else
-    local ago = os.time() - (last.completed_at or os.time())
-    local status_str
-    if last.status == "completed" then
-      status_str = string.format("%s", last.response_type or "complete")
-      if last.response_summary then
-        status_str = status_str .. " - " .. last.response_summary
-      end
-    else
-      status_str = "error"
-      if last.error_message then
-        status_str = status_str .. " - " .. last.error_message
-      end
-    end
-    table.insert(lines, string.format("  %s (%s)", status_str, format_ago(ago)))
-    table.insert(lines, string.format("  Prompt: %s", last.prompt_preview))
-    if last.file_path then
-      table.insert(lines, string.format("  File: %s", vim.fn.fnamemodify(last.file_path, ":t")))
-    end
+    return
   end
+  local ago = os.time() - (last.completed_at or os.time())
+  local status_str = build_last_completed_status(last)
+  table.insert(lines, string.format("  %s (%s)", status_str, format_ago(ago)))
+  table.insert(lines, string.format("  Prompt: %s", last.prompt_preview))
+  if last.file_path then
+    table.insert(lines, string.format("  File: %s", vim.fn.fnamemodify(last.file_path, ":t")))
+  end
+end
+
+local function build_footer_section(lines)
   table.insert(lines, "")
   table.insert(lines, string.rep("-", 40))
   table.insert(lines, "Press q or <Esc> to close")
+end
+
+function M.build_status_content()
+  local acp = require("ghost.acp")
+  local lines = {}
+  local acp_status = acp.status()
+
+  build_header_section(lines)
+  build_backend_section(lines, acp_status)
+  build_connection_section(lines, acp_status)
+  build_error_section(lines, acp_status)
+  build_active_requests_section(lines)
+  build_last_completed_section(lines)
+  build_footer_section(lines)
 
   return lines
 end

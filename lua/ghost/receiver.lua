@@ -87,168 +87,174 @@ end
 --- Process an ACP session/update notification
 --- @param update table The update notification params
 --- @param request_id string|nil The request ID
-local function process_session_update(update, request_id) -- luacheck: ignore 561
+local function handle_message_delta(inner, request_id, ghost_session_id)
+  local content = inner.content
+  if content and type(content) == "table" then
+    for _, item in ipairs(content) do
+      if item.type == "text" then
+        process_text_content(item, request_id, ghost_session_id)
+      end
+    end
+  end
+end
+
+local function extract_text_from_item(item)
+  if type(item) == "table" then
+    if item.type == "text" and item.text then
+      return item.text
+    elseif item.text then
+      return item.text
+    elseif item.content and type(item.content) == "string" then
+      return item.content
+    end
+  elseif type(item) == "string" then
+    return item
+  end
+  return nil
+end
+
+local function extract_text_from_content_array(content)
+  local chunk_text = nil
+  for _, item in ipairs(content) do
+    local text = extract_text_from_item(item)
+    if text then
+      chunk_text = (chunk_text or "") .. text
+    end
+  end
+  return chunk_text
+end
+
+local function extract_chunk_text(inner)
+  if inner.content and type(inner.content) == "table" then
+    if inner.content[1] then
+      return extract_text_from_content_array(inner.content)
+    else
+      return inner.content.text or inner.content.content or inner.content.chunk
+    end
+  end
+  return inner.chunk or inner.text or inner.delta
+end
+
+local function handle_agent_message_chunk(inner, request_id, ghost_session_id)
+  local chunk_text = extract_chunk_text(inner)
+  if chunk_text and type(chunk_text) == "string" and #chunk_text > 0 then
+    process_text_content({ text = chunk_text }, request_id, ghost_session_id)
+  end
+end
+
+local function handle_agent_thought_chunk(inner, request_id, ghost_session_id)
+  local chunk_text = inner.chunk or inner.text or inner.delta
+
+  if not chunk_text and inner.content and type(inner.content) == "table" then
+    if inner.content.type == "text" and inner.content.text then
+      chunk_text = inner.content.text
+    elseif inner.content[1] then
+      for _, item in ipairs(inner.content) do
+        if item.type == "text" and item.text then
+          chunk_text = item.text
+          break
+        end
+      end
+    end
+  end
+
+  if chunk_text and type(chunk_text) == "string" and #chunk_text > 0 then
+    process_text_content({ text = chunk_text }, request_id, ghost_session_id)
+  end
+end
+
+local function handle_agent_thought(inner, request_id, ghost_session_id)
+  local text = inner.thought or inner.message or inner.text or inner.content
+  if text and type(text) == "string" then
+    process_text_content({ text = text }, request_id, ghost_session_id)
+  end
+end
+
+local function get_target_session_id(ghost_session_id)
+  if ghost_session_id then
+    return ghost_session_id
+  end
+  local active_session = session.get_active_session()
+  if active_session then
+    return active_session.id
+  end
+  return nil
+end
+
+local function handle_tool_call(inner, request_id, ghost_session_id)
+  local tool_id = inner.toolCallId or ""
+  local tool_name = inner.title or "unknown"
+  local tool_status = inner.status or "pending"
+
+  local target_session_id = get_target_session_id(ghost_session_id)
+  if target_session_id then
+    transcript.write_tool_call(target_session_id, tool_name, tool_id, tool_status)
+  end
+
+  if state.on_update then
+    state.on_update({
+      type = "tool_call",
+      request_id = request_id,
+      tool_name = tool_name,
+      tool_id = tool_id,
+      status = tool_status,
+      ghost_session_id = ghost_session_id,
+    })
+  end
+end
+
+local function handle_tool_call_update(inner, request_id, ghost_session_id)
+  local tool_id = inner.toolCallId or ""
+  local tool_status = inner.status
+  local tool_name = inner.title
+
+  local target_session_id = get_target_session_id(ghost_session_id)
+  if target_session_id and tool_name and tool_status then
+    transcript.write_tool_call(target_session_id, tool_name, tool_id, tool_status)
+  end
+
+  if state.on_update then
+    state.on_update({
+      type = "tool_call_update",
+      request_id = request_id,
+      tool_id = tool_id,
+      status = tool_status,
+      tool_name = tool_name,
+      ghost_session_id = ghost_session_id,
+    })
+  end
+end
+
+local function handle_unknown_update(inner, request_id, ghost_session_id)
+  local text = inner.text or inner.chunk or inner.content
+  if text and type(text) == "string" and #text > 0 then
+    process_text_content({ text = text }, request_id, ghost_session_id)
+  end
+end
+
+local update_handlers = {
+  message_delta = handle_message_delta,
+  message = handle_message_delta,
+  agent_message_chunk = handle_agent_message_chunk,
+  agent_thought_chunk = handle_agent_thought_chunk,
+  agent_thought = handle_agent_thought,
+  agent_message = handle_agent_thought,
+  tool_call = handle_tool_call,
+  tool_call_update = handle_tool_call_update,
+}
+
+local function process_session_update(update, request_id)
   state.current_request_id = request_id
 
-  -- Extract ghost_session_id from update (US-009)
   local ghost_session_id = update.__ghost_session_id
-
-  -- Get the inner update object (ACP format: params.update.sessionUpdate)
   local inner = update.update or update
   local update_type = inner.sessionUpdate
 
-  -- Handle message_delta (streaming text)
-  if update_type == "message_delta" or update_type == "message" then
-    local content = inner.content
-    if content and type(content) == "table" then
-      for _, item in ipairs(content) do
-        if item.type == "text" then
-          process_text_content(item, request_id, ghost_session_id)
-        end
-      end
-    end
-    return
-  end
-
-  -- Handle agent_message_chunk (OpenCode's streaming message text)
-  if update_type == "agent_message_chunk" then
-    local chunk_text = nil
-
-    if inner.content and type(inner.content) == "table" then
-      if inner.content[1] then
-        for _, item in ipairs(inner.content) do
-          if type(item) == "table" then
-            if item.type == "text" and item.text then
-              chunk_text = (chunk_text or "") .. item.text
-            elseif item.text then
-              chunk_text = (chunk_text or "") .. item.text
-            elseif item.content and type(item.content) == "string" then
-              chunk_text = (chunk_text or "") .. item.content
-            end
-          elseif type(item) == "string" then
-            chunk_text = (chunk_text or "") .. item
-          end
-        end
-      else
-        chunk_text = inner.content.text or inner.content.content or inner.content.chunk
-      end
-    end
-
-    if not chunk_text then
-      chunk_text = inner.chunk or inner.text or inner.delta
-    end
-
-    if chunk_text and type(chunk_text) == "string" and #chunk_text > 0 then
-      process_text_content({ text = chunk_text }, request_id, ghost_session_id)
-    end
-    return
-  end
-
-  -- Handle agent_thought_chunk (OpenCode's streaming thought/reasoning)
-  if update_type == "agent_thought_chunk" then
-    local chunk_text = inner.chunk or inner.text or inner.delta
-
-    -- Handle content as single object: { type: "text", text: "..." }
-    if not chunk_text and inner.content and type(inner.content) == "table" then
-      if inner.content.type == "text" and inner.content.text then
-        -- Single content object (ACP format)
-        chunk_text = inner.content.text
-      elseif inner.content[1] then
-        -- Array of content items (fallback)
-        for _, item in ipairs(inner.content) do
-          if item.type == "text" and item.text then
-            chunk_text = item.text
-            break
-          end
-        end
-      end
-    end
-
-    if chunk_text and type(chunk_text) == "string" and #chunk_text > 0 then
-      process_text_content({ text = chunk_text }, request_id, ghost_session_id)
-    end
-    return
-  end
-
-  -- Handle agent_thought / agent_message (complete versions)
-  if update_type == "agent_thought" or update_type == "agent_message" then
-    local text = inner.thought or inner.message or inner.text or inner.content
-    if text and type(text) == "string" then
-      process_text_content({ text = text }, request_id, ghost_session_id)
-    end
-    return
-  end
-
-  -- Handle tool_call (notify about tool usage for status display)
-  if update_type == "tool_call" then
-    local tool_id = inner.toolCallId or ""
-    local tool_name = inner.title or "unknown"
-    local tool_status = inner.status or "pending"
-
-    -- Write tool call to transcript for the correct session (US-009)
-    local target_session_id = ghost_session_id
-    if not target_session_id then
-      local active_session = session.get_active_session()
-      if active_session then
-        target_session_id = active_session.id
-      end
-    end
-
-    if target_session_id then
-      transcript.write_tool_call(target_session_id, tool_name, tool_id, tool_status)
-    end
-
-    if state.on_update then
-      state.on_update({
-        type = "tool_call",
-        request_id = request_id,
-        tool_name = tool_name,
-        tool_id = tool_id,
-        status = tool_status,
-        ghost_session_id = ghost_session_id,
-      })
-    end
-    return
-  end
-
-  -- Handle tool_call_update (tool progress/completion)
-  if update_type == "tool_call_update" then
-    local tool_id = inner.toolCallId or ""
-    local tool_status = inner.status
-    local tool_name = inner.title
-
-    -- Write tool call update to transcript for the correct session (US-009)
-    local target_session_id = ghost_session_id
-    if not target_session_id then
-      local active_session = session.get_active_session()
-      if active_session then
-        target_session_id = active_session.id
-      end
-    end
-
-    if target_session_id and tool_name and tool_status then
-      transcript.write_tool_call(target_session_id, tool_name, tool_id, tool_status)
-    end
-
-    if state.on_update then
-      state.on_update({
-        type = "tool_call_update",
-        request_id = request_id,
-        tool_id = tool_id,
-        status = tool_status,
-        tool_name = tool_name,
-        ghost_session_id = ghost_session_id,
-      })
-    end
-    return
-  end
-
-  -- Fallback: Try to extract text from unknown update types
-  if update_type then
-    local text = inner.text or inner.chunk or inner.content
-    if text and type(text) == "string" and #text > 0 then
-      process_text_content({ text = text }, request_id, ghost_session_id)
-    end
+  local handler = update_handlers[update_type]
+  if handler then
+    handler(inner, request_id, ghost_session_id)
+  elseif update_type then
+    handle_unknown_update(inner, request_id, ghost_session_id)
   end
 end
 

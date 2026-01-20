@@ -28,30 +28,28 @@ local function check_executable(name, desc, required)
   end
 end
 
-function M.check() -- luacheck: ignore 561
-  start("ghost.nvim")
-
-  -- Check Neovim version
+local function check_nvim_version()
   local nvim_version = vim.version()
   if nvim_version.major < 0 or (nvim_version.major == 0 and nvim_version.minor < 10) then
     error("Neovim 0.10+ required, you're using " .. tostring(nvim_version))
   else
     ok("Neovim " .. tostring(nvim_version))
   end
+end
 
-  -- Check Ghost configuration
+local function check_config()
   local config_ok, config = pcall(require, "ghost.config")
   if not config_ok then
     error("Failed to load ghost.config module")
-    return
+    return nil
   end
 
   local backend = config.options and config.options.backend or "opencode"
   ok("Backend: " .. backend)
+  return backend, config
+end
 
-  -- Check backend executables
-  start("ghost.nvim: Backend Dependencies")
-
+local function check_backend_deps(backend, config)
   if backend == "opencode" then
     local acp_cmd = config.options and config.options.acp_command or "opencode"
     if type(acp_cmd) == "table" then
@@ -62,13 +60,10 @@ function M.check() -- luacheck: ignore 561
     check_executable("bunx", "bunx (required for codex backend)", true)
     check_executable("bun", "bun runtime", false)
   end
+end
 
-  -- Check optional dependencies
-  start("ghost.nvim: Optional Dependencies")
-
-  -- Git (for project-based session persistence)
+local function check_optional_deps()
   if check_executable("git", "git (for project session persistence)", false) then
-    -- Check if we're in a git repo
     local handle = io.popen("git rev-parse --show-toplevel 2>/dev/null")
     if handle then
       local result = handle:read("*a")
@@ -81,33 +76,51 @@ function M.check() -- luacheck: ignore 561
     end
   end
 
-  -- Snacks.nvim (for enhanced picker UI)
   local snacks_ok, snacks = pcall(require, "snacks")
   if snacks_ok and snacks.picker then
     ok("Snacks.nvim available (enhanced session picker)")
   else
     warn("Snacks.nvim not available (using vim.ui.select fallback for :GhostList)")
   end
+end
 
-  -- Check ACP connection status
-  start("ghost.nvim: Connection Status")
-
+local function check_acp_connection()
   local acp_ok, acp = pcall(require, "ghost.acp")
-  if acp_ok then
-    if acp.is_connected and acp.is_connected() then
-      ok("ACP connected")
-      if acp.get_session_id then
-        local session_id = acp.get_session_id()
-        if session_id then
-          ok("Session ID: " .. session_id)
-        end
+  if not acp_ok then
+    warn("Could not check ACP status")
+    return
+  end
+
+  if acp.is_connected and acp.is_connected() then
+    ok("ACP connected")
+    if acp.get_session_id then
+      local session_id = acp.get_session_id()
+      if session_id then
+        ok("Session ID: " .. session_id)
       end
-    else
-      warn("ACP not connected (will connect on first prompt)")
     end
   else
-    warn("Could not check ACP status")
+    warn("ACP not connected (will connect on first prompt)")
   end
+end
+
+function M.check()
+  start("ghost.nvim")
+  check_nvim_version()
+
+  local backend, config = check_config()
+  if not backend then
+    return
+  end
+
+  start("ghost.nvim: Backend Dependencies")
+  check_backend_deps(backend, config)
+
+  start("ghost.nvim: Optional Dependencies")
+  check_optional_deps()
+
+  start("ghost.nvim: Connection Status")
+  check_acp_connection()
 end
 
 return M

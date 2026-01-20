@@ -146,103 +146,114 @@ end
 --- @param bufnr number|nil Buffer number (defaults to current buffer)
 --- @param include_selection boolean|nil Whether to capture visual selection (default false)
 --- @return GhostContext Captured context
-function M.capture(bufnr, include_selection) -- luacheck: ignore 561
-  -- Safely get buffer number with fallback
-  local ok, bufnr_result = pcall(function()
+local function create_error_context()
+  return {
+    file_path = nil,
+    file_name = nil,
+    file_extension = nil,
+    filetype = "",
+    language = nil,
+    content = "",
+    cursor = { line = 1, col = 1 },
+    bufnr = 0,
+    is_special = true,
+    is_unnamed = true,
+    selection = nil,
+    selection_range = nil,
+    has_selection = false,
+  }
+end
+
+local function safe_get_bufnr(bufnr)
+  local ok, result = pcall(function()
     return bufnr or vim.api.nvim_get_current_buf()
   end)
-  if not ok or not bufnr_result then
+  if not ok or not result then
     vim.notify("Ghost: Failed to get current buffer", vim.log.levels.ERROR)
-    -- Return minimal context to avoid crashes
-    return {
-      file_path = nil,
-      file_name = nil,
-      file_extension = nil,
-      filetype = "",
-      language = nil,
-      content = "",
-      cursor = { line = 1, col = 1 },
-      bufnr = 0,
-      is_special = true,
-      is_unnamed = true,
-      selection = nil,
-      selection_range = nil,
-      has_selection = false,
-    }
+    return nil
   end
-  bufnr = bufnr_result
+  return result
+end
 
-  -- Get buffer name (file path) - safely
+local function get_buffer_info(bufnr)
   local buf_name_ok, buf_name_result = pcall(vim.api.nvim_buf_get_name, bufnr)
   local buf_name = buf_name_ok and buf_name_result or ""
   local has_name = buf_name ~= ""
 
-  -- Determine file path and name
   local file_path = has_name and buf_name or nil
-  local file_name = nil
-  if file_path then
-    file_name = vim.fn.fnamemodify(file_path, ":t")
-  end
-
-  -- Get file extension
+  local file_name = file_path and vim.fn.fnamemodify(file_path, ":t") or nil
   local extension = get_extension(file_path)
 
-  -- Get filetype - safely
   local ft_ok, ft_result = pcall(vim.api.nvim_get_option_value, "filetype", { buf = bufnr })
   local filetype = ft_ok and ft_result or ""
 
-  -- Detect language
   local language = detect_language(filetype, extension)
 
-  -- Get buffer content - safely handle empty or invalid buffers
   local lines_ok, lines_result = pcall(vim.api.nvim_buf_get_lines, bufnr, 0, -1, false)
   local lines = lines_ok and lines_result or {}
   local content = table.concat(lines, "\n")
 
-  -- Get cursor position (1-based for both line and col) - safely
+  return {
+    file_path = file_path,
+    file_name = file_name,
+    extension = extension,
+    filetype = filetype,
+    language = language,
+    content = content,
+    has_name = has_name,
+  }
+end
+
+local function get_cursor_info()
   local cursor_ok, cursor_result = pcall(vim.api.nvim_win_get_cursor, 0)
   local cursor = cursor_ok and cursor_result or { 1, 0 }
-  local cursor_pos = {
+  return {
     line = cursor[1] or 1,
-    col = (cursor[2] or 0) + 1, -- nvim_win_get_cursor returns 0-based col
+    col = (cursor[2] or 0) + 1,
   }
+end
 
-  -- Check if special buffer
-  local is_special = is_special_buffer(bufnr)
-
-  -- Capture visual selection if requested - safely
-  local selection_text = nil
-  local selection_range = nil
-  if include_selection then
-    local sel_ok, sel_text, sel_range = pcall(function()
-      return get_visual_selection(bufnr)
-    end)
-    if sel_ok then
-      selection_text = sel_text
-      selection_range = sel_range
-    end
+local function get_selection_info(bufnr, include_selection)
+  if not include_selection then
+    return nil, nil
   end
+  local sel_ok, sel_text, sel_range = pcall(function()
+    return get_visual_selection(bufnr)
+  end)
+  if sel_ok then
+    return sel_text, sel_range
+  end
+  return nil, nil
+end
+
+function M.capture(bufnr, include_selection)
+  local buf = safe_get_bufnr(bufnr)
+  if not buf then
+    return create_error_context()
+  end
+
+  local info = get_buffer_info(buf)
+  local cursor_pos = get_cursor_info()
+  local selection_text, selection_range = get_selection_info(buf, include_selection)
 
   --- @type GhostContext
   local context = {
-    file_path = file_path,
-    file_name = file_name,
-    file_extension = extension,
-    filetype = filetype or "",
-    language = language,
-    content = content,
+    file_path = info.file_path,
+    file_name = info.file_name,
+    file_extension = info.extension,
+    filetype = info.filetype or "",
+    language = info.language,
+    content = info.content,
     cursor = cursor_pos,
-    bufnr = bufnr,
-    is_special = is_special,
-    is_unnamed = not has_name,
+    bufnr = buf,
+    is_special = is_special_buffer(buf),
+    is_unnamed = not info.has_name,
     selection = selection_text,
     selection_range = selection_range,
     has_selection = selection_text ~= nil,
   }
 
-  -- Store in module state
   M.current = context
-
   return context
 end
 

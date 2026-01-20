@@ -106,31 +106,23 @@ stop_render_timer = function()
   end
 end
 
---- Process pending chunks and update buffer incrementally
-flush_pending = function() -- luacheck: ignore 561
-  -- Nothing to do if no pending data and no forced redraw
-  if #state.pending_chunks == 0 and not state.needs_full_redraw then
-    -- Stop timer if not streaming anymore
-    if not state.is_streaming then
-      stop_render_timer()
-    end
-    return
-  end
-
-  -- Determine how many chars to process this tick (adaptive based on backlog)
-  local chars_to_process = MIN_CHARS_PER_TICK
+--- Determine chars to process based on backlog size
+--- @return number chars_to_process
+local function determine_chars_to_process()
   if state.pending_bytes > BACKLOG_LARGE_THRESHOLD then
-    -- Large backlog: process more to catch up (but still smooth)
-    chars_to_process = MAX_CHARS_PER_TICK
+    return MAX_CHARS_PER_TICK
   elseif state.pending_bytes > BACKLOG_MEDIUM_THRESHOLD then
-    -- Medium backlog: moderate speed
-    chars_to_process = CHARS_PER_TICK_MEDIUM
+    return CHARS_PER_TICK_MEDIUM
   elseif state.pending_bytes > BACKLOG_SMALL_THRESHOLD then
-    -- Small backlog: slightly faster
-    chars_to_process = CHARS_PER_TICK_SMALL
+    return CHARS_PER_TICK_SMALL
   end
+  return MIN_CHARS_PER_TICK
+end
 
-  -- Consume text from pending queue
+--- Consume pending chunks up to chars_to_process limit
+--- @param chars_to_process number Maximum chars to consume
+--- @return string combined The consumed text
+local function consume_pending_chunks(chars_to_process)
   local processed = 0
   local text_to_process = {}
 
@@ -139,13 +131,11 @@ flush_pending = function() -- luacheck: ignore 561
     local remaining = chars_to_process - processed
 
     if #chunk <= remaining then
-      -- Take whole chunk
       table.insert(text_to_process, chunk)
       processed = processed + #chunk
       state.pending_bytes = state.pending_bytes - #chunk
       table.remove(state.pending_chunks, 1)
     else
-      -- Take partial chunk
       table.insert(text_to_process, chunk:sub(1, remaining))
       state.pending_chunks[1] = chunk:sub(remaining + 1)
       state.pending_bytes = state.pending_bytes - remaining
@@ -153,30 +143,94 @@ flush_pending = function() -- luacheck: ignore 561
     end
   end
 
-  -- Process text into lines (newline-aware, avoiding per-char concatenation)
-  local combined = table.concat(text_to_process)
-  if #combined > 0 then
-    -- Split by newlines
-    local segments = vim.split(combined, "\n", { plain = true })
+  return table.concat(text_to_process)
+end
 
-    for i, segment in ipairs(segments) do
-      if i == 1 then
-        -- First segment: append to current_line
-        state.current_line = state.current_line .. segment
-      else
-        -- Subsequent segments: commit current_line and start new
-        table.insert(state.lines, state.current_line)
-        state.current_line = segment
-      end
-    end
+--- Process text into lines, updating state.lines and state.current_line
+--- @param combined string The text to process
+local function process_text_into_lines(combined)
+  if #combined == 0 then
+    return
   end
 
-  -- Update buffer (incremental or full redraw)
+  local segments = vim.split(combined, "\n", { plain = true })
+  for i, segment in ipairs(segments) do
+    if i == 1 then
+      state.current_line = state.current_line .. segment
+    else
+      table.insert(state.lines, state.current_line)
+      state.current_line = segment
+    end
+  end
+end
+
+--- Perform a full buffer redraw
+local function do_full_redraw()
+  local display_lines = vim.deepcopy(state.lines)
+  if state.current_line ~= "" then
+    table.insert(display_lines, state.current_line)
+  end
+  if #display_lines == 0 then
+    display_lines = { "" }
+  end
+  pcall(vim.api.nvim_buf_set_lines, state.buf, 0, -1, false, display_lines)
+  state.rendered_line_count = #state.lines
+  state.rendered_current_line = state.current_line ~= "" and state.current_line or nil
+  state.needs_full_redraw = false
+end
+
+--- Perform an incremental buffer update
+local function do_incremental_update()
+  local new_committed_count = #state.lines
+
+  if new_committed_count > state.rendered_line_count then
+    local new_lines = {}
+    for i = state.rendered_line_count + 1, new_committed_count do
+      table.insert(new_lines, state.lines[i])
+    end
+    local insert_at = state.rendered_line_count
+    pcall(
+      vim.api.nvim_buf_set_lines,
+      state.buf,
+      insert_at,
+      insert_at + (state.rendered_current_line ~= nil and 1 or 0),
+      false,
+      new_lines
+    )
+    state.rendered_line_count = new_committed_count
+    state.rendered_current_line = nil
+  end
+
+  if state.current_line ~= "" then
+    local line_idx = state.rendered_line_count
+    if state.rendered_current_line ~= nil then
+      pcall(vim.api.nvim_buf_set_lines, state.buf, line_idx, line_idx + 1, false, { state.current_line })
+    else
+      pcall(vim.api.nvim_buf_set_lines, state.buf, line_idx, line_idx, false, { state.current_line })
+    end
+    state.rendered_current_line = state.current_line
+  elseif state.rendered_current_line ~= nil then
+    state.rendered_current_line = nil
+  end
+end
+
+--- Process pending chunks and update buffer incrementally
+flush_pending = function()
+  if #state.pending_chunks == 0 and not state.needs_full_redraw then
+    if not state.is_streaming then
+      stop_render_timer()
+    end
+    return
+  end
+
+  local chars_to_process = determine_chars_to_process()
+  local combined = consume_pending_chunks(chars_to_process)
+  process_text_into_lines(combined)
+
   if not state.buf or not vim.api.nvim_buf_is_valid(state.buf) then
     return
   end
 
-  -- Skip buffer updates if window is hidden (just accumulate state)
   if not state.win or not vim.api.nvim_win_is_valid(state.win) then
     state.needs_full_redraw = true
     return
@@ -185,64 +239,11 @@ flush_pending = function() -- luacheck: ignore 561
   pcall(vim.api.nvim_set_option_value, "modifiable", true, { buf = state.buf })
 
   if state.needs_full_redraw then
-    -- Full redraw required
-    local display_lines = vim.deepcopy(state.lines)
-    if state.current_line ~= "" then
-      table.insert(display_lines, state.current_line)
-    end
-    if #display_lines == 0 then
-      display_lines = { "" }
-    end
-    pcall(vim.api.nvim_buf_set_lines, state.buf, 0, -1, false, display_lines)
-    state.rendered_line_count = #state.lines
-    state.rendered_current_line = state.current_line ~= "" and state.current_line or nil
-    state.needs_full_redraw = false
+    do_full_redraw()
   else
-    -- Incremental update
-    local new_committed_count = #state.lines
-
-    -- Append any new committed lines
-    if new_committed_count > state.rendered_line_count then
-      local new_lines = {}
-      for i = state.rendered_line_count + 1, new_committed_count do
-        table.insert(new_lines, state.lines[i])
-      end
-      -- Append new committed lines after existing content
-      local insert_at = state.rendered_line_count
-      if state.rendered_current_line ~= nil then
-        -- There was a current_line rendered; replace it + append
-        insert_at = state.rendered_line_count
-      end
-      pcall(
-        vim.api.nvim_buf_set_lines,
-        state.buf,
-        insert_at,
-        insert_at + (state.rendered_current_line ~= nil and 1 or 0),
-        false,
-        new_lines
-      )
-      state.rendered_line_count = new_committed_count
-      state.rendered_current_line = nil -- Will be set below if needed
-    end
-
-    -- Update or add current_line
-    if state.current_line ~= "" then
-      local line_idx = state.rendered_line_count
-      if state.rendered_current_line ~= nil then
-        -- Update existing last line
-        pcall(vim.api.nvim_buf_set_lines, state.buf, line_idx, line_idx + 1, false, { state.current_line })
-      else
-        -- Append new current_line
-        pcall(vim.api.nvim_buf_set_lines, state.buf, line_idx, line_idx, false, { state.current_line })
-      end
-      state.rendered_current_line = state.current_line
-    elseif state.rendered_current_line ~= nil then
-      -- current_line was cleared (became committed); already handled above
-      state.rendered_current_line = nil
-    end
+    do_incremental_update()
   end
 
-  -- Scroll to bottom
   if state.win and vim.api.nvim_win_is_valid(state.win) then
     local line_count = vim.api.nvim_buf_line_count(state.buf)
     pcall(vim.api.nvim_win_set_cursor, state.win, { math.max(1, line_count), 0 })
@@ -678,40 +679,68 @@ function M.get_content()
   return table.concat(all_lines, "\n")
 end
 
+--- Handler for text_chunk updates
+--- @param update table
+local function handle_text_chunk(update)
+  M.append_text(update.text)
+end
+
+--- Handler for tool_call updates
+--- @param update table
+local function handle_tool_call(update)
+  M.update_tool_call(update.tool_id, update.tool_name, update.status or "pending", update.kind)
+end
+
+--- Handler for tool_call_update updates
+--- @param update table
+local function handle_tool_call_update(update)
+  local tool_info = state.tool_calls[update.tool_id]
+  local tool_name = update.tool_name or (tool_info and tool_info.tool_name) or "tool"
+  M.update_tool_call(update.tool_id, tool_name, update.status or "in_progress", nil)
+end
+
+--- Handler for tool_output updates
+--- @param update table
+local function handle_tool_output(update)
+  if update.output_type == "file_content" then
+    local line_count = update.line_count or 0
+    M.append_text(string.format("  📄 (read %d lines)\n", line_count))
+  else
+    local preview = (update.content or ""):sub(1, 100)
+    if #(update.content or "") > 100 then
+      preview = preview .. "..."
+    end
+    M.append_text("  → " .. preview .. "\n")
+  end
+end
+
+--- Handler for plan updates
+--- @param update table
+local function handle_plan(update)
+  M.add_header("Plan")
+  if update.plan and update.plan.entries then
+    for _, entry in ipairs(update.plan.entries) do
+      local status_icon = entry.completed and "✅" or "⬜"
+      M.append_text(status_icon .. " " .. (entry.description or entry.title or "Step") .. "\n")
+    end
+  end
+end
+
+--- Dispatch table for update types
+local update_handlers = {
+  text_chunk = handle_text_chunk,
+  tool_call = handle_tool_call,
+  tool_call_update = handle_tool_call_update,
+  tool_output = handle_tool_output,
+  plan = handle_plan,
+}
+
 --- Handle a Ghost update event
 --- @param update table The update from receiver
-function M.handle_update(update) -- luacheck: ignore 561
-  if update.type == "text_chunk" then
-    M.append_text(update.text)
-  elseif update.type == "tool_call" then
-    M.update_tool_call(update.tool_id, update.tool_name, update.status or "pending", update.kind)
-  elseif update.type == "tool_call_update" then
-    -- Look up existing tool call or create new entry
-    local tool_info = state.tool_calls[update.tool_id]
-    local tool_name = update.tool_name or (tool_info and tool_info.tool_name) or "tool"
-    M.update_tool_call(update.tool_id, tool_name, update.status or "in_progress", nil)
-  elseif update.type == "tool_output" then
-    -- Summarize tool output instead of showing full content
-    if update.output_type == "file_content" then
-      -- Just show a summary, not the full file
-      local line_count = update.line_count or 0
-      M.append_text(string.format("  📄 (read %d lines)\n", line_count))
-    else
-      -- Show truncated output for other types
-      local preview = (update.content or ""):sub(1, 100)
-      if #(update.content or "") > 100 then
-        preview = preview .. "..."
-      end
-      M.append_text("  → " .. preview .. "\n")
-    end
-  elseif update.type == "plan" then
-    M.add_header("Plan")
-    if update.plan and update.plan.entries then
-      for _, entry in ipairs(update.plan.entries) do
-        local status_icon = entry.completed and "✅" or "⬜"
-        M.append_text(status_icon .. " " .. (entry.description or entry.title or "Step") .. "\n")
-      end
-    end
+function M.handle_update(update)
+  local handler = update_handlers[update.type]
+  if handler then
+    handler(update)
   end
 end
 
