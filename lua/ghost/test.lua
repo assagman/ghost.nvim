@@ -52,31 +52,26 @@ local function handle_test_update(update, output_lines)
   local inner = update.update or update
   local update_type = inner.sessionUpdate
 
+  local function handle_message_content()
+    local content = inner.content
+    if content and type(content) == "table" then
+      for _, item in ipairs(content) do
+        if item.type == "text" and item.text then
+          io.write(item.text)
+          io.flush()
+          table.insert(output_lines, item.text)
+        end
+      end
+    end
+  end
+
+  local function handle_plan_update()
+    print("[Plan updated]")
+  end
+
   local handlers = {
-    message_delta = function()
-      local content = inner.content
-      if content and type(content) == "table" then
-        for _, item in ipairs(content) do
-          if item.type == "text" and item.text then
-            io.write(item.text)
-            io.flush()
-            table.insert(output_lines, item.text)
-          end
-        end
-      end
-    end,
-    message = function()
-      local content = inner.content
-      if content and type(content) == "table" then
-        for _, item in ipairs(content) do
-          if item.type == "text" and item.text then
-            io.write(item.text)
-            io.flush()
-            table.insert(output_lines, item.text)
-          end
-        end
-      end
-    end,
+    message_delta = handle_message_content,
+    message = handle_message_content,
     tool_call = function()
       print("\n[Tool: " .. (inner.title or "unknown") .. " (" .. (inner.kind or "?") .. ")]")
     end,
@@ -84,12 +79,8 @@ local function handle_test_update(update, output_lines)
       local status = inner.status or "unknown"
       print("[Tool update: " .. (inner.toolCallId or "?") .. " - " .. status .. "]")
     end,
-    plan_update = function()
-      print("[Plan updated]")
-    end,
-    plan = function()
-      print("[Plan updated]")
-    end,
+    plan_update = handle_plan_update,
+    plan = handle_plan_update,
   }
 
   local handler = handlers[update_type]
